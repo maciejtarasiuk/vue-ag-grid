@@ -4,29 +4,50 @@ import { ref, onMounted, onUnmounted, watch } from "vue";
 
 export default {
   name: "App",
-  components: {
-    AgGridVue,
-  },
+  components: { AgGridVue },
   setup() {
-    // Row Data with always one empty row at the end
+    // =====================================================
+    // 🗂️ DATA & STATE MANAGEMENT
+    // =====================================================
+    
     const rowData = ref([
       { make: "Tesla", model: "Model Y", price: 64950, electric: true },
       { make: "Ford", model: "F-Series", price: 33850, electric: false },
       { make: "Toyota", model: "Corolla", price: 29600, electric: false },
-      { make: "", model: "", price: null, electric: false }, // Empty row
+      { make: "", model: "", price: null, electric: false },
     ]);
 
-    // Selection state
+    const columnFields = ["make", "model", "price", "electric"];
+    const gridApi = ref(null);
+
+    // =====================================================
+    // 🎯 SELECTION STATE
+    // =====================================================
+    
     const selectedCells = ref(new Set());
     const isSelecting = ref(false);
     const startCell = ref(null);
-    const gridApi = ref(null);
+    const currentFocusedCell = ref(null);
+    
+    // =====================================================
+    // ✏️ EDITING STATE
+    // =====================================================
+    
+    const isEditing = ref(false);
+    
+    // =====================================================
+    // 📋 CLIPBOARD STATE
+    // =====================================================
+    
     const clipboard = ref([]);
 
-    // Column fields for easier reference
-    const columnFields = ["make", "model", "price", "electric"];
-
-    // Ensure there's always one empty row at the end
+    // =====================================================
+    // 🔧 UTILITY FUNCTIONS
+    // =====================================================
+    
+    /**
+     * Ensures there's always one empty row at the end of the grid
+     */
     const ensureEmptyRow = () => {
       const lastRow = rowData.value[rowData.value.length - 1];
       const isEmpty = !lastRow.make && !lastRow.model && !lastRow.price && !lastRow.electric;
@@ -36,21 +57,49 @@ export default {
       }
     };
 
-    // Watch for changes in data to maintain empty row
-    watch(rowData, () => {
-      ensureEmptyRow();
-    }, { deep: true });
-
-    // Get cell identifier
+    /**
+     * Creates unique cell identifier
+     */
     const getCellId = (rowIndex, colField) => `${rowIndex}-${colField}`;
 
-    // Check if cell is selected - using AG Grid's built-in focus style
+    /**
+     * Checks if a cell is currently selected (for AG Grid cellClassRules)
+     */
     const isCellSelected = (params) => {
       const cellId = getCellId(params.node.rowIndex, params.colDef.field);
       return selectedCells.value.has(cellId);
     };
 
-    // Clear selection
+    /**
+     * Gets cell coordinates from DOM element
+     */
+    const getCellCoords = (element) => {
+      const cell = element.closest('.ag-cell');
+      if (!cell) return null;
+      
+      const row = cell.closest('.ag-row');
+      if (!row) return null;
+      
+      const rowIndex = parseInt(row.getAttribute('row-index'));
+      const colId = cell.getAttribute('col-id');
+      const colIndex = columnFields.indexOf(colId);
+      
+      if (rowIndex >= 0 && colIndex >= 0) {
+        return { rowIndex, colIndex, colId };
+      }
+      return null;
+    };
+
+    // Watch for changes in data to maintain empty row
+    watch(rowData, ensureEmptyRow, { deep: true });
+
+    // =====================================================
+    // 🎯 SELECTION MANAGEMENT
+    // =====================================================
+    
+    /**
+     * Clears all selected cells and refreshes the grid
+     */
     const clearSelection = () => {
       selectedCells.value.clear();
       if (gridApi.value) {
@@ -58,55 +107,9 @@ export default {
       }
     };
 
-    // Handle mouse down - start selection
-    const onCellMouseDown = (event) => {
-      const rowIndex = event.node.rowIndex;
-      const colField = event.colDef.field;
-      const colIndex = columnFields.indexOf(colField);
-      
-      console.log('Mouse down:', rowIndex, colField);
-      
-      if (event.event.ctrlKey || event.event.metaKey) {
-        // Multi-select with Cmd/Ctrl
-        const cellId = getCellId(rowIndex, colField);
-        if (selectedCells.value.has(cellId)) {
-          selectedCells.value.delete(cellId);
-        } else {
-          selectedCells.value.add(cellId);
-        }
-      } else if (event.event.shiftKey && startCell.value) {
-        // Range select
-        selectRange(startCell.value.row, startCell.value.col, rowIndex, colIndex);
-      } else {
-        // Start new selection
-        selectedCells.value.clear();
-        const cellId = getCellId(rowIndex, colField);
-        selectedCells.value.add(cellId);
-        startCell.value = { row: rowIndex, col: colIndex };
-        isSelecting.value = true;
-      }
-      
-      if (gridApi.value) {
-        gridApi.value.refreshCells({ force: true });
-      }
-    };
-
-    // Handle mouse over during selection
-    const onCellMouseOver = (event) => {
-      if (!isSelecting.value || !startCell.value) return;
-      
-      const rowIndex = event.node.rowIndex;
-      const colIndex = columnFields.indexOf(event.colDef.field);
-      
-      // Select range from start to current cell
-      selectRange(startCell.value.row, startCell.value.col, rowIndex, colIndex);
-      
-      if (gridApi.value) {
-        gridApi.value.refreshCells({ force: true });
-      }
-    };
-
-    // Select range of cells
+    /**
+     * Selects a range of cells from start to end coordinates
+     */
     const selectRange = (startRow, startCol, endRow, endCol) => {
       selectedCells.value.clear();
       
@@ -125,12 +128,72 @@ export default {
       }
     };
 
-    // Handle mouse up - end selection
+    /**
+     * Handles mouse down events for starting selection
+     */
+    const handleGridMouseDown = (event) => {
+      const coords = getCellCoords(event.target);
+      if (!coords) return;
+      
+      if (event.ctrlKey || event.metaKey) {
+        // Multi-select with Cmd/Ctrl
+        const cellId = getCellId(coords.rowIndex, coords.colId);
+        if (selectedCells.value.has(cellId)) {
+          selectedCells.value.delete(cellId);
+        } else {
+          selectedCells.value.add(cellId);
+        }
+      } else if (event.shiftKey && startCell.value) {
+        // Range select with Shift
+        selectRange(startCell.value.row, startCell.value.col, coords.rowIndex, coords.colIndex);
+      } else {
+        // Start new selection
+        selectedCells.value.clear();
+        const cellId = getCellId(coords.rowIndex, coords.colId);
+        selectedCells.value.add(cellId);
+        startCell.value = { row: coords.rowIndex, col: coords.colIndex };
+        currentFocusedCell.value = { row: coords.rowIndex, col: coords.colIndex };
+        isSelecting.value = true;
+      }
+      
+      if (gridApi.value) {
+        gridApi.value.refreshCells({ force: true });
+      }
+      
+      event.preventDefault();
+    };
+
+    /**
+     * Handles mouse over events during drag selection
+     */
+    const handleGridMouseOver = (event) => {
+      if (!isSelecting.value || !startCell.value) return;
+      
+      const coords = getCellCoords(event.target);
+      if (!coords) return;
+      
+      // Select range from start to current cell
+      selectRange(startCell.value.row, startCell.value.col, coords.rowIndex, coords.colIndex);
+      
+      if (gridApi.value) {
+        gridApi.value.refreshCells({ force: true });
+      }
+    };
+
+    /**
+     * Handles mouse up events to end selection
+     */
     const onMouseUp = () => {
       isSelecting.value = false;
     };
 
-    // Copy selected cells in proper table format
+    // =====================================================
+    // 📋 CLIPBOARD OPERATIONS
+    // =====================================================
+    
+    /**
+     * Copies selected cells to clipboard in table format
+     */
     const copySelectedCells = () => {
       if (selectedCells.value.size === 0) {
         showNotification("Nie ma zaznaczonych komórek");
@@ -154,25 +217,27 @@ export default {
       // Create 2D array
       const cellData = [];
       for (let row = minRow; row <= maxRow; row++) {
-        const rowData_copy = [];
+        const rowDataCopy = [];
         for (let col = minCol; col <= maxCol; col++) {
           const pos = positions.find(p => p.row === row && p.col === col);
-          rowData_copy.push(pos ? pos.value : '');
+          rowDataCopy.push(pos ? pos.value : '');
         }
-        cellData.push(rowData_copy);
+        cellData.push(rowDataCopy);
       }
       
       clipboard.value = cellData;
       
       const textData = cellData.map(row => row.join('\t')).join('\n');
       navigator.clipboard.writeText(textData).catch(() => {
-        console.log('Could not copy to system clipboard');
+        // Fallback: clipboard API not available
       });
       
       showNotification(`✅ Skopiowano ${cellData.length}x${cellData[0]?.length || 0} komórek`);
     };
 
-    // Paste data starting from first selected cell or top-left
+    /**
+     * Pastes clipboard data starting from first selected cell or top-left
+     */
     const pasteData = () => {
       if (!clipboard.value.length) {
         showNotification("❌ Clipboard jest pusty");
@@ -223,10 +288,39 @@ export default {
       showNotification(`✅ Wklejono ${clipboard.value.length}x${clipboard.value[0]?.length || 0} komórek`);
     };
 
-    // Show notification
-    const showNotification = (message) => {
-      console.log(message);
+    /**
+     * Deletes content of selected cells
+     */
+    const deleteSelectedCells = () => {
+      if (selectedCells.value.size === 0) {
+        showNotification("❌ Nie ma zaznaczonych komórek");
+        return;
+      }
       
+      for (const cellId of selectedCells.value) {
+        const [rowIndex, colField] = cellId.split('-');
+        const row = parseInt(rowIndex);
+        
+        if (colField === 'price') {
+          rowData.value[row][colField] = null;
+        } else if (colField === 'electric') {
+          rowData.value[row][colField] = false;
+        } else {
+          rowData.value[row][colField] = "";
+        }
+      }
+      
+      showNotification(`✅ Wyczyszczono ${selectedCells.value.size} komórek`);
+    };
+
+    // =====================================================
+    // 💬 NOTIFICATIONS
+    // =====================================================
+    
+    /**
+     * Shows a toast notification to the user
+     */
+    const showNotification = (message) => {
       const toast = document.createElement('div');
       toast.textContent = message;
       toast.style.cssText = `
@@ -251,55 +345,40 @@ export default {
       }, 2000);
     };
 
-    // Delete selected cells
-    const deleteSelectedCells = () => {
-      if (selectedCells.value.size === 0) {
-        showNotification("❌ Nie ma zaznaczonych komórek");
-        return;
-      }
-      
-      for (const cellId of selectedCells.value) {
-        const [rowIndex, colField] = cellId.split('-');
-        const row = parseInt(rowIndex);
-        
-        if (colField === 'price') {
-          rowData.value[row][colField] = null;
-        } else if (colField === 'electric') {
-          rowData.value[row][colField] = false;
-        } else {
-          rowData.value[row][colField] = "";
-        }
-      }
-      
-      showNotification(`✅ Wyczyszczono ${selectedCells.value.size} komórek`);
-    };
-
-    // Clear all data
+    // =====================================================
+    // 🗑️ DATA MANAGEMENT
+    // =====================================================
+    
+    /**
+     * Clears all data and resets to single empty row
+     */
     const clearAllData = () => {
       rowData.value = [{ make: "", model: "", price: null, electric: false }];
       clearSelection();
       showNotification("✅ Wyczyszczono wszystkie dane");
     };
 
-    // Column definitions - SIMPLE
+    // =====================================================
+    // 📊 GRID CONFIGURATION
+    // =====================================================
+    
+    /**
+     * AG Grid column definitions
+     */
     const colDefs = ref([
       {
         field: "make",
         headerName: "Marka",
         editable: true,
         flex: 1,
-        cellClassRules: {
-          'ag-cell-range-selected': isCellSelected
-        },
+        cellClassRules: { 'ag-cell-range-selected': isCellSelected },
       },
       {
         field: "model",
         headerName: "Model",
         editable: true,
         flex: 1,
-        cellClassRules: {
-          'ag-cell-range-selected': isCellSelected
-        },
+        cellClassRules: { 'ag-cell-range-selected': isCellSelected },
       },
       {
         field: "price",
@@ -307,9 +386,7 @@ export default {
         editable: true,
         cellDataType: "number",
         flex: 1,
-        cellClassRules: {
-          'ag-cell-range-selected': isCellSelected
-        },
+        cellClassRules: { 'ag-cell-range-selected': isCellSelected },
         valueFormatter: (params) => {
           if (params.value == null) return "";
           return new Intl.NumberFormat('pl-PL', {
@@ -324,16 +401,17 @@ export default {
         editable: true,
         cellDataType: "boolean",
         flex: 1,
-        cellClassRules: {
-          'ag-cell-range-selected': isCellSelected
-        },
+        cellClassRules: { 'ag-cell-range-selected': isCellSelected },
       },
     ]);
 
-    // Track current focused cell for arrow navigation
-    const currentFocusedCell = ref(null);
-
-    // Handle arrow key navigation with selection
+    // =====================================================
+    // ⌨️ KEYBOARD NAVIGATION & EDITING
+    // =====================================================
+    
+    /**
+     * Handles arrow key navigation with optional range selection
+     */
     const handleArrowNavigation = (direction, shiftPressed) => {
       if (!currentFocusedCell.value) return;
       
@@ -378,29 +456,24 @@ export default {
       }
     };
 
-    // Check if user is currently editing a cell
-    const isEditing = ref(false);
-
-    // Keyboard handlers
+    /**
+     * Main keyboard event handler
+     */
     const handleKeyDown = (event) => {
       // Don't interfere if user is editing a cell
-      if (isEditing.value) {
-        return;
-      }
+      if (isEditing.value) return;
       
       // Don't interfere if user is typing in an input or textarea
-      if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') {
-        return;
-      }
+      if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;
       
-      // Handle arrow keys only if not editing
+      // Handle arrow keys
       if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) {
         event.preventDefault();
         handleArrowNavigation(event.key, event.shiftKey);
         return;
       }
       
-      // Handle special keys
+      // Handle keyboard shortcuts
       if ((event.ctrlKey || event.metaKey) && event.key === 'c') {
         event.preventDefault();
         copySelectedCells();
@@ -417,6 +490,7 @@ export default {
         startEditingCurrentCell();
       } else if ((event.ctrlKey || event.metaKey) && event.key === 'a') {
         event.preventDefault();
+        // Select all cells (excluding empty row)
         selectedCells.value.clear();
         for (let row = 0; row < rowData.value.length - 1; row++) {
           for (let col = 0; col < columnFields.length; col++) {
@@ -433,14 +507,15 @@ export default {
       }
     };
 
-    // Start editing the currently focused cell
+    /**
+     * Starts editing the currently focused cell
+     */
     const startEditingCurrentCell = () => {
       if (!currentFocusedCell.value || !gridApi.value) return;
       
       const { row, col } = currentFocusedCell.value;
       const colField = columnFields[col];
       
-      // Find the node and start editing
       gridApi.value.forEachNode((node) => {
         if (node.rowIndex === row) {
           gridApi.value.startEditingCell({
@@ -452,78 +527,15 @@ export default {
       });
     };
 
-    // Get cell coordinates from DOM element
-    const getCellCoords = (element) => {
-      const cell = element.closest('.ag-cell');
-      if (!cell) return null;
-      
-      const row = cell.closest('.ag-row');
-      if (!row) return null;
-      
-      const rowIndex = parseInt(row.getAttribute('row-index'));
-      const colId = cell.getAttribute('col-id');
-      const colIndex = columnFields.indexOf(colId);
-      
-      if (rowIndex >= 0 && colIndex >= 0) {
-        return { rowIndex, colIndex, colId };
-      }
-      return null;
-    };
-
-    // Handle mouse down - start selection
-    const handleGridMouseDown = (event) => {
-      const coords = getCellCoords(event.target);
-      if (!coords) return;
-      
-      console.log('🎯 Mouse down:', coords.rowIndex, coords.colId);
-      
-      if (event.ctrlKey || event.metaKey) {
-        // Multi-select with Cmd/Ctrl
-        const cellId = getCellId(coords.rowIndex, coords.colId);
-        if (selectedCells.value.has(cellId)) {
-          selectedCells.value.delete(cellId);
-        } else {
-          selectedCells.value.add(cellId);
-        }
-      } else if (event.shiftKey && startCell.value) {
-        // Range select with Shift
-        selectRange(startCell.value.row, startCell.value.col, coords.rowIndex, coords.colIndex);
-      } else {
-        // Start new selection
-        selectedCells.value.clear();
-        const cellId = getCellId(coords.rowIndex, coords.colId);
-        selectedCells.value.add(cellId);
-        startCell.value = { row: coords.rowIndex, col: coords.colIndex };
-        currentFocusedCell.value = { row: coords.rowIndex, col: coords.colIndex };
-        isSelecting.value = true;
-      }
-      
-      if (gridApi.value) {
-        gridApi.value.refreshCells({ force: true });
-      }
-      
-      event.preventDefault();
-    };
-
-    // Handle mouse over during selection
-    const handleGridMouseOver = (event) => {
-      if (!isSelecting.value || !startCell.value) return;
-      
-      const coords = getCellCoords(event.target);
-      if (!coords) return;
-      
-      // Select range from start to current cell
-      selectRange(startCell.value.row, startCell.value.col, coords.rowIndex, coords.colIndex);
-      
-      if (gridApi.value) {
-        gridApi.value.refreshCells({ force: true });
-      }
-    };
-
-    // Grid ready
+    // =====================================================
+    // 🖱️ GRID INITIALIZATION & EVENTS
+    // =====================================================
+    
+    /**
+     * Initializes the grid and sets up event listeners
+     */
     const onGridReady = (params) => {
       gridApi.value = params.api;
-      console.log('✅ Grid ready');
       
       // Initialize focus on first cell
       currentFocusedCell.value = { row: 0, col: 0 };
@@ -537,7 +549,6 @@ export default {
         if (gridElement) {
           gridElement.addEventListener('mousedown', handleGridMouseDown);
           gridElement.addEventListener('mouseover', handleGridMouseOver);
-          console.log('✅ Mouse listeners added for drag selection');
         }
         
         // Refresh to show initial selection
@@ -547,7 +558,10 @@ export default {
       }, 100);
     };
 
-    // Lifecycle
+    // =====================================================
+    // 🔄 LIFECYCLE MANAGEMENT
+    // =====================================================
+    
     onMounted(() => {
       document.addEventListener('keydown', handleKeyDown);
       document.addEventListener('mouseup', onMouseUp);
@@ -559,18 +573,27 @@ export default {
       document.removeEventListener('mouseup', onMouseUp);
     });
 
+    // =====================================================
+    // 📤 COMPONENT EXPORTS
+    // =====================================================
+    
     return {
+      // Data
       rowData,
       colDefs,
-      selectedCells,
       clipboard,
+      selectedCells,
       isEditing,
+      
+      // Grid events
       onGridReady,
-      copySelectedCells,
-      pasteData,
-      deleteSelectedCells,
+      
+      // User actions
       clearAllData,
       clearSelection,
+      copySelectedCells,
+      deleteSelectedCells,
+      pasteData,
     };
   },
 };
